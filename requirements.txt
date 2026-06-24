@@ -1,0 +1,8 @@
+playwright
+pytesseract
+Pillow
+opencv-python-headless<4.10
+numpy<2.0
+gspread
+google-auth
+pytest
