@@ -10,6 +10,10 @@ class SiteUnavailableError(ScraperError):
     pass
 
 
+class SecurityChallengeError(ScraperError):
+    pass
+
+
 class EditionNotFoundError(ScraperError):
     pass
 

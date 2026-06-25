@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
-from playwright.sync_api import Error, Page
+from playwright.sync_api import Error, Page, TimeoutError
 
-from scraper.browser import dismiss_overlays, screenshot_page
-from scraper.exceptions import ConfigurationError, KPTANotFoundError
+from scraper.browser import assert_no_security_challenge, dismiss_overlays, screenshot_page
+from scraper.exceptions import ConfigurationError, KPTANotFoundError, SecurityChallengeError, SiteUnavailableError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,18 +36,24 @@ def scan_for_kpta(
     max_pages: int = 16,
     threshold: float = 0.70,
 ) -> DetectionResult:
+    del edition_url  # Keep the public call shape, but avoid direct page URL jumps.
+
     templates = load_templates(Path(__file__).parent / "templates")
     pages_dir = artifacts_dir / "pages"
     detection_dir = artifacts_dir / "detection"
     detection_dir.mkdir(parents=True, exist_ok=True)
 
     best_matches: list[dict[str, object]] = []
-    selected: DetectionResult | None = None
 
     for page_number in range(1, max_pages + 1):
         LOGGER.info("Scanning newspaper page %s", page_number)
-        open_page_number(page, edition_url, page_number)
+        if page_number > 1:
+            go_to_next_viewer_page(page, page_number)
+
         dismiss_overlays(page)
+        assert_no_security_challenge(page)
+        settle_viewer(page)
+
         screenshot_path = pages_dir / f"page_{page_number}.png"
         screenshot_page(page, screenshot_path)
 
@@ -64,45 +69,172 @@ def scan_for_kpta(
                 "template": match["template"],
             }
         )
+        _write_best_matches(best_matches, detection_dir)
         LOGGER.info("Best KPTA confidence on page %s: %.3f", page_number, match["confidence"])
 
-        if match["confidence"] >= threshold and (
-            selected is None or match["confidence"] > selected.confidence
-        ):
-            zoom_path = artifacts_dir / "ocr" / "zoom.png"
-            selected = crop_zoom_region(
-                screenshot_path,
-                zoom_path,
-                int(match["x"]),
-                int(match["y"]),
-                int(match["width"]),
-                int(match["height"]),
-                page_number,
-                float(match["confidence"]),
-            )
+        if match["confidence"] < threshold:
+            continue
 
-    (detection_dir / "best_matches.json").write_text(
-        json.dumps(best_matches, indent=2),
-        encoding="utf-8",
-    )
+        selected = DetectionResult(
+            page_number=page_number,
+            confidence=float(match["confidence"]),
+            x=int(match["x"]),
+            y=int(match["y"]),
+            width=int(match["width"]),
+            height=int(match["height"]),
+            page_screenshot=str(screenshot_path),
+            zoom_screenshot=str(artifacts_dir / "ocr" / "zoom.png"),
+        )
+        _write_detection_overlay(selected, artifacts_dir / "detection" / "selected_match.png")
+        capture_kpta_detail_view(page, selected, artifacts_dir / "ocr" / "zoom.png")
+        LOGGER.info("Selected page %s with confidence %.3f", selected.page_number, selected.confidence)
+        return selected
 
-    if selected is None:
-        raise KPTANotFoundError(f"No KPTA match met confidence threshold {threshold}")
+    raise KPTANotFoundError(f"No KPTA match met confidence threshold {threshold}")
 
-    _write_detection_overlay(selected, artifacts_dir / "detection" / "selected_match.png")
-    LOGGER.info("Selected page %s with confidence %.3f", selected.page_number, selected.confidence)
-    return selected
+
+def go_to_next_viewer_page(page: Page, target_page_number: int) -> None:
+    LOGGER.info("Navigating to page %s using viewer controls", target_page_number)
+    assert_no_security_challenge(page)
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(700)
+
+    if click_page_number_control(page, target_page_number):
+        page.wait_for_timeout(2_000)
+        assert_no_security_challenge(page)
+        return
+
+    if click_next_control(page):
+        page.wait_for_timeout(2_000)
+        assert_no_security_challenge(page)
+        return
+
+    raise KPTANotFoundError(f"Could not navigate to page {target_page_number} using viewer controls")
+
+
+def click_page_number_control(page: Page, page_number: int) -> bool:
+    candidates = page.get_by_text(str(page_number), exact=True)
+    try:
+        count = min(candidates.count(), 20)
+    except Error:
+        return False
+
+    for index in range(count):
+        candidate = candidates.nth(index)
+        try:
+            box = candidate.bounding_box(timeout=1_000)
+            if not box or not candidate.is_visible(timeout=1_000):
+                continue
+            if not _looks_like_viewer_nav_box(box):
+                continue
+            candidate.click(timeout=3_000)
+            return True
+        except Error:
+            continue
+    return False
+
+
+def click_next_control(page: Page) -> bool:
+    selectors = [
+        "[aria-label*='Next']",
+        "[title*='Next']",
+        ".next",
+        ".page-next",
+        ".fa-chevron-right",
+        ".fa-angle-right",
+        "a:has-text('›')",
+        "button:has-text('›')",
+        "a:has-text('>')",
+        "button:has-text('>')",
+    ]
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.count() and locator.is_visible(timeout=1_000):
+                locator.click(timeout=3_000)
+                return True
+        except Error:
+            continue
+
+    viewport = page.viewport_size or {"width": 1920, "height": 1080}
+    try:
+        page.mouse.click(viewport["width"] * 0.62, viewport["height"] * 0.58)
+        return True
+    except Error:
+        return False
+
+
+def settle_viewer(page: Page) -> None:
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(700)
+    page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight / 3, 700))")
+    page.wait_for_timeout(1_000)
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(700)
+
+
+def capture_kpta_detail_view(page: Page, result: DetectionResult, output_path: Path) -> None:
+    LOGGER.info("Clicking detected KPTA block to open isolated detail view")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    center_x = result.x + result.width / 2
+    center_y = result.y + result.height / 2
+    viewport = page.viewport_size or {"width": 1920, "height": 1080}
+    scroll_y = max(0, int(center_y - viewport["height"] / 2))
+
+    page.evaluate("(y) => window.scrollTo(0, y)", scroll_y)
+    page.wait_for_timeout(500)
+    click_y = center_y - scroll_y
+
+    detail_page = page
+    try:
+        with page.context.expect_page(timeout=3_000) as new_page_info:
+            page.mouse.click(center_x, click_y)
+        detail_page = new_page_info.value
+        detail_page.wait_for_load_state("domcontentloaded", timeout=10_000)
+    except TimeoutError:
+        detail_page = page
+    except Error as exc:
+        raise SiteUnavailableError(f"Could not click detected KPTA block: {exc}") from exc
+
+    detail_page.wait_for_timeout(2_000)
+    try:
+        assert_no_security_challenge(detail_page)
+    except SecurityChallengeError:
+        LOGGER.warning("KPTA detail click opened security verification; falling back to page crop")
+        crop_kpta_region_from_page(result, output_path)
+        return
+
+    screenshot_page(detail_page, output_path)
+    LOGGER.info("Saved isolated KPTA detail screenshot to %s", output_path)
+
+
+def crop_kpta_region_from_page(result: DetectionResult, output_path: Path) -> None:
+    image = Image.open(result.page_screenshot)
+    left = max(0, int(result.x - result.width * 0.15))
+    top = max(0, int(result.y - result.height * 0.30))
+    right = min(image.width, int(result.x + result.width * 1.35))
+    bottom = min(image.height, int(result.y + result.height * 6.4))
+    crop = image.crop((left, top, right, bottom))
+    crop = crop.resize((crop.width * 5, crop.height * 5), Image.Resampling.LANCZOS)
+    crop.save(output_path)
+    LOGGER.info("Saved fallback KPTA page crop to %s", output_path)
 
 
 def load_templates(templates_dir: Path) -> list[tuple[str, np.ndarray]]:
     templates: list[tuple[str, np.ndarray]] = []
-    for path in sorted(templates_dir.glob("*.png")):
+    template_paths = [
+        path
+        for pattern in ("*.png", "*.jpg", "*.jpeg")
+        for path in templates_dir.glob(pattern)
+    ]
+    for path in sorted(template_paths):
         image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if image is not None and image.size:
             templates.append((path.name, image))
     if not templates:
         raise ConfigurationError(
-            f"No template PNG files found in {templates_dir}. Add at least 3 KPTA crops."
+            f"No template image files found in {templates_dir}. Add at least 3 KPTA crops."
         )
     return templates
 
@@ -140,44 +272,10 @@ def best_template_match(
     return best
 
 
-def open_page_number(page: Page, edition_url: str, page_number: int) -> None:
-    target_url = _page_url(edition_url, page_number)
-    try:
-        page.goto(target_url, wait_until="domcontentloaded", timeout=45_000)
-        page.wait_for_timeout(1_500)
-    except Error as exc:
-        raise KPTANotFoundError(f"Could not open page {page_number}: {exc}") from exc
-
-
-def crop_zoom_region(
-    page_screenshot: Path,
-    zoom_path: Path,
-    x: int,
-    y: int,
-    width: int,
-    height: int,
-    page_number: int,
-    confidence: float,
-) -> DetectionResult:
-    zoom_path.parent.mkdir(parents=True, exist_ok=True)
-    image = Image.open(page_screenshot)
-    pad_x = max(40, width // 2)
-    pad_y = max(40, height // 2)
-    left = max(0, x - pad_x)
-    top = max(0, y - pad_y)
-    right = min(image.width, x + width + pad_x)
-    bottom = min(image.height, y + height + pad_y)
-    crop = image.crop((left, top, right, bottom))
-    crop.save(zoom_path)
-    return DetectionResult(
-        page_number=page_number,
-        confidence=confidence,
-        x=x,
-        y=y,
-        width=width,
-        height=height,
-        page_screenshot=str(page_screenshot),
-        zoom_screenshot=str(zoom_path),
+def _write_best_matches(best_matches: list[dict[str, object]], detection_dir: Path) -> None:
+    (detection_dir / "best_matches.json").write_text(
+        json.dumps(best_matches, indent=2),
+        encoding="utf-8",
     )
 
 
@@ -202,7 +300,9 @@ def _write_detection_overlay(result: DetectionResult, output_path: Path) -> None
     )
 
 
-def _page_url(edition_url: str, page_number: int) -> str:
-    if re.search(r"/page/\d+", edition_url):
-        return re.sub(r"/page/\d+", f"/page/{page_number}", edition_url)
-    return edition_url.rstrip("/#") + f"/page/{page_number}#"
+def _looks_like_viewer_nav_box(box: dict[str, float]) -> bool:
+    x = box.get("x", 0)
+    y = box.get("y", 0)
+    width = box.get("width", 0)
+    height = box.get("height", 0)
+    return 450 <= x <= 1400 and (0 <= y <= 320 or 900 <= y <= 1250) and width <= 80 and height <= 80

@@ -92,3 +92,20 @@ def screenshot_page(page: Page, path: Path, *, full_page: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(path), full_page=full_page)
 
+
+def assert_no_security_challenge(page: Page) -> None:
+    from scraper.exceptions import SecurityChallengeError
+
+    try:
+        body_text = page.locator("body").inner_text(timeout=3_000).lower()
+    except Error:
+        body_text = ""
+
+    challenge_markers = (
+        "verify you are human",
+        "performing security verification",
+        "cloudflare",
+        "not a bot",
+    )
+    if any(marker in body_text for marker in challenge_markers):
+        raise SecurityChallengeError("Cloudflare security verification page detected")

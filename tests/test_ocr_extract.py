@@ -13,6 +13,10 @@ def test_extract_numbers_filters_two_and_three_digit_values() -> None:
     assert extract_numbers("abc 135 rs 500 7 0400") == [135, 500]
 
 
+def test_extract_numbers_handles_noisy_concatenated_ocr_runs() -> None:
+    assert extract_numbers("2 100142 6044 140438 2400 27540296") == [142, 140, 275, 296]
+
+
 def test_extract_price_accepts_single_plausible_candidate(monkeypatch, tmp_path: Path) -> None:
     image_path = _blank_png(tmp_path)
 

@@ -1,0 +1,20 @@
+[
+  {
+    "value": 135,
+    "text": "135",
+    "confidence": 88.0,
+    "left": 0,
+    "top": 0,
+    "width": 30,
+    "height": 20
+  },
+  {
+    "value": 142,
+    "text": "142",
+    "confidence": 87.0,
+    "left": 40,
+    "top": 0,
+    "width": 30,
+    "height": 20
+  }
+]

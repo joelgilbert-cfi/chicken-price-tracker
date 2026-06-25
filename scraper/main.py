@@ -19,6 +19,7 @@ from scraper.exceptions import (
     EditionNotFoundError,
     KPTANotFoundError,
     PriceNotFoundError,
+    SecurityChallengeError,
     SiteUnavailableError,
 )
 from scraper.ocr_extract import OcrResult, extract_price
@@ -74,7 +75,13 @@ def main() -> int:
         LOGGER.exception("OCR failed")
         row = build_sheet_row(now, price="N/A")
         return write_expected_failure(row, artifacts_dir, "OCR_FAILED", str(exc))
-    except (ConfigurationError, SiteUnavailableError, EditionNotFoundError, PlaywrightError) as exc:
+    except (
+        ConfigurationError,
+        SecurityChallengeError,
+        SiteUnavailableError,
+        EditionNotFoundError,
+        PlaywrightError,
+    ) as exc:
         LOGGER.exception("Technical scraper failure")
         row = build_sheet_row(now, price="N/A")
         return write_technical_failure(row, artifacts_dir, str(exc))
@@ -108,10 +115,8 @@ def write_expected_failure(row: PriceRow, artifacts_dir: Path, status: str, note
 
 
 def write_technical_failure(row: PriceRow, artifacts_dir: Path, notes: str) -> int:
-    try:
-        upsert_price(row)
-    except Exception:
-        LOGGER.exception("Failed writing technical failure row to Google Sheets")
+    del row
+    LOGGER.info("Skipping Google Sheet update for technical failure")
     write_final_status(artifacts_dir, "TECHNICAL_ERROR", 1, notes)
     return 1
 
