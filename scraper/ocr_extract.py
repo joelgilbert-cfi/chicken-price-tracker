@@ -42,7 +42,7 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
     ocr_dir = artifacts_dir / "ocr"
     ocr_dir.mkdir(parents=True, exist_ok=True)
 
-    image = Image.open(image_path).convert("RGB")
+    image = normalize_ocr_image_size(Image.open(image_path).convert("RGB"))
     image.save(ocr_dir / "zoom.png")
     red_mask = build_red_mask(image)
     Image.fromarray(red_mask).save(ocr_dir / "red_mask.png")
@@ -122,6 +122,13 @@ def build_red_mask(image: Image.Image) -> np.ndarray:
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     mask = cv2.dilate(mask, kernel, iterations=1)
     return mask
+
+
+def normalize_ocr_image_size(image: Image.Image) -> Image.Image:
+    if image.width >= 600:
+        return image
+    scale = max(2, round(600 / max(image.width, 1)))
+    return image.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
 
 
 def run_tesseract(image: Image.Image) -> tuple[str, list[OcrCandidate]]:

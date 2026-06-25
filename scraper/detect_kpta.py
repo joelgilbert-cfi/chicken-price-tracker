@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass
+from datetime import date
 from pathlib import Path
 
 import cv2
@@ -33,6 +34,7 @@ def scan_for_kpta(
     edition_url: str,
     artifacts_dir: Path,
     *,
+    target_date: date | None = None,
     max_pages: int = 16,
     threshold: float = 0.70,
 ) -> DetectionResult:
@@ -86,7 +88,7 @@ def scan_for_kpta(
             zoom_screenshot=str(artifacts_dir / "ocr" / "zoom.png"),
         )
         _write_detection_overlay(selected, artifacts_dir / "detection" / "selected_match.png")
-        capture_kpta_detail_view(page, selected, artifacts_dir / "ocr" / "zoom.png")
+        capture_kpta_detail_view(page, selected, artifacts_dir / "ocr" / "zoom.png", target_date=target_date)
         LOGGER.info("Selected page %s with confidence %.3f", selected.page_number, selected.confidence)
         return selected
 
@@ -173,9 +175,26 @@ def settle_viewer(page: Page) -> None:
     page.wait_for_timeout(700)
 
 
-def capture_kpta_detail_view(page: Page, result: DetectionResult, output_path: Path) -> None:
-    LOGGER.info("Clicking detected KPTA block to resolve exact API article image")
+def capture_kpta_detail_view(
+    page: Page,
+    result: DetectionResult,
+    output_path: Path,
+    *,
+    target_date: date | None = None,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if target_date is not None:
+        try:
+            from scraper.article_api import find_kpta_article_image_on_page
+
+            find_kpta_article_image_on_page(target_date, result.page_number, output_path.parent.parent)
+            LOGGER.info("Saved API KPTA page article image to %s", output_path)
+            return
+        except Exception as exc:
+            LOGGER.warning("KPTA page API image selection failed; trying click response: %s", exc)
+
+    LOGGER.info("Clicking detected KPTA block to resolve exact API article image")
 
     center_x = result.x + result.width / 2
     center_y = result.y + result.height / 2

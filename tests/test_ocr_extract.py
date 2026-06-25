@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from scraper.exceptions import AmbiguousPriceError, PriceNotFoundError
-from scraper.ocr_extract import extract_numbers, extract_price
+from scraper.ocr_extract import extract_numbers, extract_price, normalize_ocr_image_size
 
 
 def test_extract_numbers_filters_two_and_three_digit_values() -> None:
@@ -72,6 +72,13 @@ def test_extract_price_rejects_ambiguous_candidates(monkeypatch, tmp_path: Path)
     monkeypatch.setattr("pytesseract.image_to_data", fake_image_to_data)
     with pytest.raises(AmbiguousPriceError):
         extract_price(image_path, tmp_path / "artifacts")
+
+
+def test_normalize_ocr_image_size_upscales_small_images() -> None:
+    image = Image.new("RGB", (300, 200), "white")
+    normalized = normalize_ocr_image_size(image)
+    assert normalized.width >= 600
+    assert normalized.height > image.height
 
 
 def _blank_png(tmp_path: Path) -> Path:

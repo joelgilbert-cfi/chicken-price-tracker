@@ -43,6 +43,26 @@ class ArticleCandidate:
     template: str | None
 
 
+@dataclass(frozen=True)
+class PageArticleCandidate:
+    issue_id: str
+    page_number: int
+    article_id: str
+    image_url: str
+    image_path: str
+    green_ratio: float
+    red_ratio: float
+    score: float
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
+
+KPTA_GREEN_RATIO_THRESHOLD = 0.05
+KPTA_RED_RATIO_THRESHOLD = 0.04
+
+
 def find_kpta_article_image(
     target_date: date,
     artifacts_dir: Path,
@@ -168,9 +188,112 @@ def flatten_article_refs(issue_id: str, pages: list[dict[str, object]]) -> list[
                     "page_number": page_number,
                     "article_id": article_id,
                     "image_url": image_url,
+                    "x1": _safe_int(article.get("x1")),
+                    "y1": _safe_int(article.get("y1")),
+                    "x2": _safe_int(article.get("x2")),
+                    "y2": _safe_int(article.get("y2")),
                 }
             )
     return refs
+
+
+def find_kpta_article_image_on_page(
+    target_date: date,
+    page_number: int,
+    artifacts_dir: Path,
+) -> Path:
+    issue_id = build_issue_id(target_date)
+    articles_dir = artifacts_dir / "articles"
+    articles_dir.mkdir(parents=True, exist_ok=True)
+    ocr_dir = artifacts_dir / "ocr"
+    ocr_dir.mkdir(parents=True, exist_ok=True)
+
+    LOGGER.info("Finding KPTA article image from API page %s for issue %s", page_number, issue_id)
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json,text/plain,*/*"})
+    article_refs = [
+        article
+        for article in flatten_article_refs(issue_id, fetch_issue_pages(session, issue_id))
+        if article["page_number"] == page_number
+    ]
+    if not article_refs:
+        raise KPTANotFoundError(f"No article images returned for issue {issue_id} page {page_number}")
+
+    candidates: list[PageArticleCandidate] = []
+    for article in article_refs:
+        article_id = str(article["article_id"])
+        image_url = str(article["image_url"])
+        image_path = articles_dir / f"{sanitize_filename(article_id)}.jpg"
+        try:
+            download_image(session, image_url, image_path)
+            green_ratio, red_ratio = measure_kpta_color_ratios(image_path)
+        except Exception as exc:
+            LOGGER.warning("Skipping API article %s during color validation: %s", article_id, exc)
+            continue
+
+        score = green_ratio * red_ratio
+        candidates.append(
+            PageArticleCandidate(
+                issue_id=issue_id,
+                page_number=page_number,
+                article_id=article_id,
+                image_url=image_url,
+                image_path=str(image_path),
+                green_ratio=green_ratio,
+                red_ratio=red_ratio,
+                score=score,
+                x1=int(article.get("x1") or 0),
+                y1=int(article.get("y1") or 0),
+                x2=int(article.get("x2") or 0),
+                y2=int(article.get("y2") or 0),
+            )
+        )
+
+    payload = [asdict(candidate) for candidate in candidates]
+    payload.sort(key=lambda item: item["score"], reverse=True)
+    (articles_dir / "page_article_candidates.json").write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+
+    if not candidates:
+        raise KPTANotFoundError(f"No API article images could be evaluated for page {page_number}")
+
+    selected = max(candidates, key=lambda candidate: candidate.score)
+    if (
+        selected.green_ratio < KPTA_GREEN_RATIO_THRESHOLD
+        or selected.red_ratio < KPTA_RED_RATIO_THRESHOLD
+    ):
+        raise KPTANotFoundError(
+            "No page API article had enough KPTA green-header and red-price color signal; "
+            f"best green={selected.green_ratio:.4f}, red={selected.red_ratio:.4f}"
+        )
+
+    output_path = ocr_dir / "zoom.png"
+    Image.open(selected.image_path).convert("RGB").save(output_path)
+    (articles_dir / "selected_page_article.json").write_text(
+        json.dumps(asdict(selected), indent=2),
+        encoding="utf-8",
+    )
+    LOGGER.info(
+        "Selected API page article %s with green_ratio=%.4f red_ratio=%.4f",
+        selected.article_id,
+        selected.green_ratio,
+        selected.red_ratio,
+    )
+    return output_path
+
+
+def measure_kpta_color_ratios(image_path: Path) -> tuple[float, float]:
+    image = np.array(Image.open(image_path).convert("RGB"))
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    green_mask = cv2.inRange(hsv, np.array([35, 50, 50]), np.array([95, 255, 255]))
+    red_mask = cv2.bitwise_or(
+        cv2.inRange(hsv, np.array([0, 55, 40]), np.array([12, 255, 255])),
+        cv2.inRange(hsv, np.array([168, 55, 40]), np.array([180, 255, 255])),
+    )
+    total_pixels = max(1, image.shape[0] * image.shape[1])
+    return float(np.count_nonzero(green_mask) / total_pixels), float(np.count_nonzero(red_mask) / total_pixels)
 
 
 def download_image(session: requests.Session, image_url: str, output_path: Path) -> None:
@@ -261,3 +384,10 @@ def write_article_candidates(articles_dir: Path, candidates: list[ArticleCandida
 
 def sanitize_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0

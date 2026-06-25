@@ -88,7 +88,7 @@ def run_playwright_pipeline(now: datetime, artifacts_dir: Path) -> OcrResult:
         browser, _context, page = launch_browser(playwright)
         try:
             edition_url = open_bengaluru_edition(page, now.date(), artifacts_dir)
-            detection = scan_for_kpta(page, edition_url, artifacts_dir)
+            detection = scan_for_kpta(page, edition_url, artifacts_dir, target_date=now.date())
             return extract_price(Path(detection.zoom_screenshot), artifacts_dir)
         finally:
             browser.close()
