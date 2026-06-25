@@ -9,6 +9,8 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - name: Checkout repo
@@ -31,7 +33,7 @@ jobs:
         run: playwright install chromium --with-deps
 
       - name: Run OCR tests
-        run: pytest tests/test_ocr_extract.py
+        run: python -m pytest
 
       - name: Run scraper
         env:
