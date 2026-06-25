@@ -174,7 +174,7 @@ def settle_viewer(page: Page) -> None:
 
 
 def capture_kpta_detail_view(page: Page, result: DetectionResult, output_path: Path) -> None:
-    LOGGER.info("Clicking detected KPTA block to open isolated detail view")
+    LOGGER.info("Clicking detected KPTA block to resolve exact API article image")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     center_x = result.x + result.width / 2
@@ -186,27 +186,26 @@ def capture_kpta_detail_view(page: Page, result: DetectionResult, output_path: P
     page.wait_for_timeout(500)
     click_y = center_y - scroll_y
 
-    detail_page = page
     try:
-        with page.context.expect_page(timeout=3_000) as new_page_info:
-            page.mouse.click(center_x, click_y)
-        detail_page = new_page_info.value
-        detail_page.wait_for_load_state("domcontentloaded", timeout=10_000)
-    except TimeoutError:
-        detail_page = page
-    except Error as exc:
-        raise SiteUnavailableError(f"Could not click detected KPTA block: {exc}") from exc
+        from scraper.article_api import save_article_detail_image
 
-    detail_page.wait_for_timeout(2_000)
-    try:
-        assert_no_security_challenge(detail_page)
-    except SecurityChallengeError:
-        LOGGER.warning("KPTA detail click opened security verification; falling back to page crop")
+        with page.expect_response(
+            lambda response: "operation=getArticleByArticleId" in response.url,
+            timeout=6_000,
+        ) as response_info:
+            page.mouse.click(center_x, click_y)
+        response = response_info.value
+        image_url = save_article_detail_image(response.json(), output_path)
+        LOGGER.info("Saved API KPTA article image to %s from %s", output_path, image_url)
+        return
+    except Error as exc:
+        LOGGER.warning("KPTA API article response was not captured; falling back to page crop: %s", exc)
         crop_kpta_region_from_page(result, output_path)
         return
-
-    screenshot_page(detail_page, output_path)
-    LOGGER.info("Saved isolated KPTA detail screenshot to %s", output_path)
+    except Exception as exc:
+        LOGGER.warning("KPTA API image download failed; falling back to page crop: %s", exc)
+        crop_kpta_region_from_page(result, output_path)
+        return
 
 
 def crop_kpta_region_from_page(result: DetectionResult, output_path: Path) -> None:

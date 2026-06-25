@@ -1,6 +1,14 @@
 from datetime import date
 
-from scraper.article_api import build_issue_id, flatten_article_refs, sanitize_filename
+import pytest
+
+from scraper.article_api import (
+    build_issue_id,
+    extract_article_detail_image_url,
+    flatten_article_refs,
+    sanitize_filename,
+)
+from scraper.exceptions import KPTANotFoundError
 
 
 def test_build_issue_id_uses_bengaluru_date() -> None:
@@ -40,3 +48,20 @@ def test_flatten_article_refs_extracts_article_images() -> None:
 
 def test_sanitize_filename_keeps_safe_identifier_characters() -> None:
     assert sanitize_filename("VVAANINEW/BEN 20260625:3:5") == "VVAANINEW_BEN_20260625_3_5"
+
+
+def test_extract_article_detail_image_url_prefers_r2_image_path() -> None:
+    payload = [
+        {
+            "r2imagepath": "https://images.example/kpta.jpg",
+            "fallbackimagepath": "https://fallback.example/kpta.jpg",
+            "Article": {"x1": "1", "y1": "203", "x2": "83", "y2": "316"},
+        }
+    ]
+
+    assert extract_article_detail_image_url(payload) == "https://images.example/kpta.jpg"
+
+
+def test_extract_article_detail_image_url_rejects_missing_url() -> None:
+    with pytest.raises(KPTANotFoundError):
+        extract_article_detail_image_url([{"Article": {}}])

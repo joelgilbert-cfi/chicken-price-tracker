@@ -179,6 +179,34 @@ def download_image(session: requests.Session, image_url: str, output_path: Path)
     output_path.write_bytes(response.content)
 
 
+def save_article_detail_image(payload: object, output_path: Path) -> str:
+    image_url = extract_article_detail_image_url(payload)
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    download_image(session, image_url, output_path)
+    return image_url
+
+
+def extract_article_detail_image_url(payload: object) -> str:
+    if isinstance(payload, list) and payload:
+        first = payload[0]
+    elif isinstance(payload, dict):
+        first = payload
+    else:
+        raise KPTANotFoundError("Article detail API returned no article records")
+
+    if not isinstance(first, dict):
+        raise KPTANotFoundError("Article detail API returned an unexpected record shape")
+
+    for key in ("r2imagepath", "fallbackimagepath", "r2imagename", "imagename"):
+        value = first.get(key)
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+
+    raise KPTANotFoundError("Article detail API response did not include an image URL")
+
+
 def best_template_match_multiscale(
     image_path: Path,
     templates: list[tuple[str, np.ndarray]],
