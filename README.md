@@ -36,11 +36,18 @@ Debug files are written under `artifacts/`.
 
 ## Scraper Flow
 
-The scraper first tries the e-paper API. It builds today's Bengaluru issue ID, reads the issue article list, downloads article images, and uses KPTA template matching to pick the clean KPTA article image for OCR.
+The scraper uses a hybrid flow:
 
-If the API path cannot produce a valid price, the scraper falls back to Playwright. It opens the Bengaluru edition, then stays inside the e-paper viewer while scanning pages. It uses the viewer controls to move between pages instead of directly jumping to `/page/2`, `/page/3`, and so on.
+1. Opens today's Bengaluru edition with Playwright.
+2. Scans pages in the e-paper viewer using viewer controls.
+3. Screenshots each page and runs template matching against KPTA header crops in `scraper/templates/`.
+4. Once the KPTA block is found, uses the detected page number to query the e-paper article API for that specific page.
+5. Downloads only the likely KPTA article image from that page, selected by strong green KPTA-header and red-price color signals.
+6. Saves that clean article image to `artifacts/ocr/zoom.png`.
+7. Upscales small API article images before OCR.
+8. Extracts the KPTA chicken price and writes only the date and price to Google Sheets.
 
-For each Playwright page, it screenshots the newspaper view and runs template matching against the KPTA header crops in `scraper/templates/`. When it finds a confident match, it clicks that KPTA area and screenshots the isolated KPTA detail view to `artifacts/ocr/zoom.png`; OCR runs on that isolated view.
+If the page-specific API image selection fails, the scraper falls back to a cropped page screenshot of the detected KPTA region.
 
 If Cloudflare or a "verify you are human" page appears, the scraper stops and records a technical failure.
 
