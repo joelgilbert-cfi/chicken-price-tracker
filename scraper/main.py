@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
+from scraper.article_api import find_kpta_article_image
 from scraper.browser import launch_browser
 from scraper.detect_kpta import DetectionResult, scan_for_kpta
 from scraper.edition import open_bengaluru_edition
@@ -46,50 +47,67 @@ def main() -> int:
         write_final_status(artifacts_dir, "TECHNICAL_ERROR", 1, "Missing required environment variables")
         return 1
 
-    detection: DetectionResult | None = None
-    ocr: OcrResult | None = None
+    try:
+        ocr = run_api_pipeline(now, artifacts_dir)
+        source = "API"
+    except (KPTANotFoundError, PriceNotFoundError, AmbiguousPriceError, SiteUnavailableError) as exc:
+        LOGGER.warning("API pipeline did not produce a price; falling back to Playwright: %s", exc)
+        try:
+            ocr = run_playwright_pipeline(now, artifacts_dir)
+            source = "Playwright"
+        except KPTANotFoundError as fallback_exc:
+            LOGGER.exception("KPTA block not found")
+            row = build_sheet_row(now, price="N/A")
+            return write_expected_failure(row, artifacts_dir, "CONTENT_MISS", str(fallback_exc))
+        except (PriceNotFoundError, AmbiguousPriceError) as fallback_exc:
+            LOGGER.exception("OCR failed")
+            row = build_sheet_row(now, price="N/A")
+            return write_expected_failure(row, artifacts_dir, "OCR_FAILED", str(fallback_exc))
+        except (
+            ConfigurationError,
+            SecurityChallengeError,
+            SiteUnavailableError,
+            EditionNotFoundError,
+            PlaywrightError,
+        ) as fallback_exc:
+            LOGGER.exception("Technical scraper failure")
+            row = build_sheet_row(now, price="N/A")
+            return write_technical_failure(row, artifacts_dir, str(fallback_exc))
+    except ConfigurationError as exc:
+        LOGGER.exception("Technical scraper failure")
+        row = build_sheet_row(now, price="N/A")
+        return write_technical_failure(row, artifacts_dir, str(exc))
 
     try:
-        with sync_playwright() as playwright:
-            browser, _context, page = launch_browser(playwright)
-            try:
-                edition_url = open_bengaluru_edition(page, now.date(), artifacts_dir)
-                detection = scan_for_kpta(page, edition_url, artifacts_dir)
-                ocr = extract_price(Path(detection.zoom_screenshot), artifacts_dir)
-            finally:
-                browser.close()
-
         row = build_sheet_row(
             now,
             price=ocr.price if ocr else "N/A",
         )
         upsert_price(row)
-        write_final_status(artifacts_dir, "OK", 0, "Success")
+        write_final_status(artifacts_dir, "OK", 0, f"Success via {source}")
         return 0
-
-    except KPTANotFoundError as exc:
-        LOGGER.exception("KPTA block not found")
-        row = build_sheet_row(now, price="N/A")
-        return write_expected_failure(row, artifacts_dir, "CONTENT_MISS", str(exc))
-    except (PriceNotFoundError, AmbiguousPriceError) as exc:
-        LOGGER.exception("OCR failed")
-        row = build_sheet_row(now, price="N/A")
-        return write_expected_failure(row, artifacts_dir, "OCR_FAILED", str(exc))
-    except (
-        ConfigurationError,
-        SecurityChallengeError,
-        SiteUnavailableError,
-        EditionNotFoundError,
-        PlaywrightError,
-    ) as exc:
-        LOGGER.exception("Technical scraper failure")
-        row = build_sheet_row(now, price="N/A")
-        return write_technical_failure(row, artifacts_dir, str(exc))
     except Exception as exc:
         LOGGER.exception("Unexpected scraper failure")
         (artifacts_dir / "traceback.txt").write_text(traceback.format_exc(), encoding="utf-8")
         row = build_sheet_row(now, price="N/A")
         return write_technical_failure(row, artifacts_dir, str(exc))
+
+
+def run_api_pipeline(now: datetime, artifacts_dir: Path) -> OcrResult:
+    image_path = find_kpta_article_image(now.date(), artifacts_dir)
+    return extract_price(image_path, artifacts_dir)
+
+
+def run_playwright_pipeline(now: datetime, artifacts_dir: Path) -> OcrResult:
+    detection: DetectionResult | None = None
+    with sync_playwright() as playwright:
+        browser, _context, page = launch_browser(playwright)
+        try:
+            edition_url = open_bengaluru_edition(page, now.date(), artifacts_dir)
+            detection = scan_for_kpta(page, edition_url, artifacts_dir)
+            return extract_price(Path(detection.zoom_screenshot), artifacts_dir)
+        finally:
+            browser.close()
 
 
 def build_sheet_row(

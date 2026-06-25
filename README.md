@@ -36,9 +36,11 @@ Debug files are written under `artifacts/`.
 
 ## Scraper Flow
 
-The scraper opens the Bengaluru edition, then stays inside the e-paper viewer while scanning pages. It uses the viewer controls to move between pages instead of directly jumping to `/page/2`, `/page/3`, and so on.
+The scraper first tries the e-paper API. It builds today's Bengaluru issue ID, reads the issue article list, downloads article images, and uses KPTA template matching to pick the clean KPTA article image for OCR.
 
-For each page, it screenshots the newspaper view and runs template matching against the KPTA header crops in `scraper/templates/`. When it finds a confident match, it clicks that KPTA area and screenshots the isolated KPTA detail view to `artifacts/ocr/zoom.png`; OCR runs on that isolated view.
+If the API path cannot produce a valid price, the scraper falls back to Playwright. It opens the Bengaluru edition, then stays inside the e-paper viewer while scanning pages. It uses the viewer controls to move between pages instead of directly jumping to `/page/2`, `/page/3`, and so on.
+
+For each Playwright page, it screenshots the newspaper view and runs template matching against the KPTA header crops in `scraper/templates/`. When it finds a confident match, it clicks that KPTA area and screenshots the isolated KPTA detail view to `artifacts/ocr/zoom.png`; OCR runs on that isolated view.
 
 If Cloudflare or a "verify you are human" page appears, the scraper stops and records a technical failure.
 

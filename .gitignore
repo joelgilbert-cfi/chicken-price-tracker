@@ -3,6 +3,7 @@ artifacts/*
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.tmp/
 .venv/
 venv/
 .env
