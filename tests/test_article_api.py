@@ -3,11 +3,13 @@ from datetime import date
 import pytest
 
 from scraper.article_api import (
+    PageArticleCandidate,
     build_issue_id,
     extract_article_detail_image_url,
     flatten_article_refs,
     measure_kpta_color_ratios,
     sanitize_filename,
+    select_kpta_page_article_candidate,
 )
 from scraper.exceptions import KPTANotFoundError
 
@@ -85,3 +87,35 @@ def test_measure_kpta_color_ratios_detects_green_and_red(tmp_path) -> None:
     green_ratio, red_ratio = measure_kpta_color_ratios(image_path)
     assert green_ratio > 0.25
     assert red_ratio > 0.05
+
+
+def test_select_kpta_page_article_filters_before_ranking() -> None:
+    false_positive = _candidate(
+        article_id="VVAANINEW_BEN_20260627_5_2",
+        green_ratio=0.3189,
+        red_ratio=0.0327,
+    )
+    kpta = _candidate(
+        article_id="VVAANINEW_BEN_20260627_5_6",
+        green_ratio=0.1120,
+        red_ratio=0.0727,
+    )
+
+    assert select_kpta_page_article_candidate([false_positive, kpta]) == kpta
+
+
+def _candidate(article_id: str, green_ratio: float, red_ratio: float) -> PageArticleCandidate:
+    return PageArticleCandidate(
+        issue_id="VVAANINEW_BEN_20260627",
+        page_number=5,
+        article_id=article_id,
+        image_url=f"https://images.example/{article_id}.jpg",
+        image_path=f"artifacts/{article_id}.jpg",
+        green_ratio=green_ratio,
+        red_ratio=red_ratio,
+        score=green_ratio * red_ratio,
+        x1=0,
+        y1=0,
+        x2=0,
+        y2=0,
+    )

@@ -259,14 +259,12 @@ def find_kpta_article_image_on_page(
     if not candidates:
         raise KPTANotFoundError(f"No API article images could be evaluated for page {page_number}")
 
-    selected = max(candidates, key=lambda candidate: candidate.score)
-    if (
-        selected.green_ratio < KPTA_GREEN_RATIO_THRESHOLD
-        or selected.red_ratio < KPTA_RED_RATIO_THRESHOLD
-    ):
+    selected = select_kpta_page_article_candidate(candidates)
+    if selected is None:
+        best = max(candidates, key=lambda candidate: candidate.score)
         raise KPTANotFoundError(
             "No page API article had enough KPTA green-header and red-price color signal; "
-            f"best green={selected.green_ratio:.4f}, red={selected.red_ratio:.4f}"
+            f"best green={best.green_ratio:.4f}, red={best.red_ratio:.4f}"
         )
 
     output_path = ocr_dir / "zoom.png"
@@ -282,6 +280,20 @@ def find_kpta_article_image_on_page(
         selected.red_ratio,
     )
     return output_path
+
+
+def select_kpta_page_article_candidate(
+    candidates: list[PageArticleCandidate],
+) -> PageArticleCandidate | None:
+    valid_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.green_ratio >= KPTA_GREEN_RATIO_THRESHOLD
+        and candidate.red_ratio >= KPTA_RED_RATIO_THRESHOLD
+    ]
+    if not valid_candidates:
+        return None
+    return max(valid_candidates, key=lambda candidate: candidate.score)
 
 
 def measure_kpta_color_ratios(image_path: Path) -> tuple[float, float]:
