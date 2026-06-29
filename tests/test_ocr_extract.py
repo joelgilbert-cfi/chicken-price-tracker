@@ -17,6 +17,19 @@ def test_extract_numbers_handles_noisy_concatenated_ocr_runs() -> None:
     assert extract_numbers("2 100142 6044 140438 2400 27540296") == [142, 140, 275, 296]
 
 
+def test_extract_numbers_corrects_missing_hundreds_digit() -> None:
+    assert extract_numbers("053 702136 700145 200 290 31 0 100 715") == [
+        153,
+        136,
+        145,
+        200,
+        290,
+        31,
+        100,
+        715,
+    ]
+
+
 def test_extract_price_accepts_single_plausible_candidate(monkeypatch, tmp_path: Path) -> None:
     image_path = _blank_png(tmp_path)
 
@@ -72,6 +85,24 @@ def test_extract_price_rejects_ambiguous_candidates(monkeypatch, tmp_path: Path)
     monkeypatch.setattr("pytesseract.image_to_data", fake_image_to_data)
     with pytest.raises(AmbiguousPriceError):
         extract_price(image_path, tmp_path / "artifacts")
+
+
+def test_extract_price_selects_corrected_top_price(monkeypatch, tmp_path: Path) -> None:
+    image_path = _blank_png(tmp_path)
+
+    def fake_image_to_data(*_args, **_kwargs):
+        return {
+            "text": ["053", "702136", "700145", "200"],
+            "conf": ["52", "48", "49", "51"],
+            "left": [100, 100, 100, 100],
+            "top": [10, 60, 110, 160],
+            "width": [50, 90, 90, 50],
+            "height": [20, 20, 20, 20],
+        }
+
+    monkeypatch.setattr("pytesseract.image_to_data", fake_image_to_data)
+    result = extract_price(image_path, tmp_path / "artifacts")
+    assert result.price == 153
 
 
 def test_normalize_ocr_image_size_upscales_small_images() -> None:

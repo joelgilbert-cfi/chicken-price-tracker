@@ -171,10 +171,19 @@ def extract_numbers(text: str) -> list[int]:
     for match in re.finditer(r"\d+", text):
         run = match.group(0)
         if 2 <= len(run) <= 3:
-            numbers.append(int(run))
+            numbers.extend(_extract_numbers_from_short_run(run))
             continue
         numbers.extend(_extract_numbers_from_long_run(run))
     return numbers
+
+
+def _extract_numbers_from_short_run(run: str) -> list[int]:
+    value = int(run)
+    if len(run) == 3 and run.startswith("0") and value < MIN_PRICE:
+        corrected = value + 100
+        if MIN_PRICE <= corrected <= MAX_PRICE:
+            return [corrected]
+    return [value]
 
 
 def _extract_numbers_from_long_run(run: str) -> list[int]:
