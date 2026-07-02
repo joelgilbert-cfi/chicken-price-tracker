@@ -9,6 +9,7 @@ from scraper.article_api import (
     flatten_article_refs,
     measure_kpta_color_ratios,
     sanitize_filename,
+    score_kpta_text_signals,
     select_kpta_page_article_candidate,
 )
 from scraper.exceptions import KPTANotFoundError
@@ -104,7 +105,48 @@ def test_select_kpta_page_article_filters_before_ranking() -> None:
     assert select_kpta_page_article_candidate([false_positive, kpta]) == kpta
 
 
-def _candidate(article_id: str, green_ratio: float, red_ratio: float) -> PageArticleCandidate:
+def test_select_kpta_page_article_prefers_kpta_text_signal() -> None:
+    green_red_ad = _candidate(
+        article_id="VVAANINEW_BEN_20260701_1_5",
+        green_ratio=0.6433,
+        red_ratio=0.0434,
+        text_score=0,
+    )
+    kpta = _candidate(
+        article_id="VVAANINEW_BEN_20260701_1_7",
+        green_ratio=0.1600,
+        red_ratio=0.0800,
+        text_score=100,
+    )
+
+    assert select_kpta_page_article_candidate([green_red_ad, kpta]) == kpta
+
+
+def test_score_kpta_text_signals_detects_unique_article_anchor(tmp_path, monkeypatch) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "article.png"
+    Image.new("RGB", (120, 80), "white").save(image_path)
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *_args, **_kwargs: "KPTA 01-07-2026 M: 7618763488",
+    )
+
+    score, matches = score_kpta_text_signals(image_path, date(2026, 7, 1))
+
+    assert score >= 170
+    assert "kpta" in matches
+    assert "7618763488" in matches
+    assert "date" in matches
+
+
+def _candidate(
+    article_id: str,
+    green_ratio: float,
+    red_ratio: float,
+    text_score: int = 0,
+) -> PageArticleCandidate:
     return PageArticleCandidate(
         issue_id="VVAANINEW_BEN_20260627",
         page_number=5,
@@ -113,9 +155,11 @@ def _candidate(article_id: str, green_ratio: float, red_ratio: float) -> PageArt
         image_path=f"artifacts/{article_id}.jpg",
         green_ratio=green_ratio,
         red_ratio=red_ratio,
-        score=green_ratio * red_ratio,
+        score=text_score + (green_ratio * red_ratio),
         x1=0,
         y1=0,
         x2=0,
         y2=0,
+        text_score=text_score,
+        text_matches=("kpta",) if text_score else (),
     )

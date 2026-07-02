@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytesseract
 import requests
 from PIL import Image
 
@@ -57,10 +58,18 @@ class PageArticleCandidate:
     y1: int
     x2: int
     y2: int
+    text_score: int = 0
+    text_matches: tuple[str, ...] = ()
 
 
 KPTA_GREEN_RATIO_THRESHOLD = 0.05
 KPTA_RED_RATIO_THRESHOLD = 0.04
+KPTA_TEXT_SIGNALS = (
+    ("kpta", 100),
+    ("7618763488", 40),
+    ("broiler", 15),
+    ("poultry", 15),
+)
 
 
 def find_kpta_article_image(
@@ -227,11 +236,12 @@ def find_kpta_article_image_on_page(
         try:
             download_image(session, image_url, image_path)
             green_ratio, red_ratio = measure_kpta_color_ratios(image_path)
+            text_score, text_matches = score_kpta_text_signals(image_path, target_date)
         except Exception as exc:
             LOGGER.warning("Skipping API article %s during color validation: %s", article_id, exc)
             continue
 
-        score = green_ratio * red_ratio
+        score = text_score + (green_ratio * red_ratio)
         candidates.append(
             PageArticleCandidate(
                 issue_id=issue_id,
@@ -242,6 +252,8 @@ def find_kpta_article_image_on_page(
                 green_ratio=green_ratio,
                 red_ratio=red_ratio,
                 score=score,
+                text_score=text_score,
+                text_matches=text_matches,
                 x1=int(article.get("x1") or 0),
                 y1=int(article.get("y1") or 0),
                 x2=int(article.get("x2") or 0),
@@ -274,10 +286,12 @@ def find_kpta_article_image_on_page(
         encoding="utf-8",
     )
     LOGGER.info(
-        "Selected API page article %s with green_ratio=%.4f red_ratio=%.4f",
+        "Selected API page article %s with green_ratio=%.4f red_ratio=%.4f text_score=%s text_matches=%s",
         selected.article_id,
         selected.green_ratio,
         selected.red_ratio,
+        selected.text_score,
+        ",".join(selected.text_matches) or "-",
     )
     return output_path
 
@@ -293,7 +307,51 @@ def select_kpta_page_article_candidate(
     ]
     if not valid_candidates:
         return None
-    return max(valid_candidates, key=lambda candidate: candidate.score)
+    return max(
+        valid_candidates,
+        key=lambda candidate: (
+            candidate.text_score > 0,
+            candidate.text_score,
+            candidate.red_ratio,
+            candidate.score,
+        ),
+    )
+
+
+def score_kpta_text_signals(image_path: Path, target_date: date) -> tuple[int, tuple[str, ...]]:
+    try:
+        text = pytesseract.image_to_string(
+            normalize_candidate_text_image(Image.open(image_path).convert("RGB")),
+            config="--psm 6",
+        )
+    except Exception as exc:
+        LOGGER.warning("Could not OCR API article %s for KPTA text signals: %s", image_path.name, exc)
+        return 0, ()
+
+    normalized = re.sub(r"[^a-z0-9]+", "", text.lower())
+    matches: list[str] = []
+    score = 0
+    for signal, weight in KPTA_TEXT_SIGNALS:
+        if signal in normalized:
+            matches.append(signal)
+            score += weight
+
+    date_tokens = (
+        target_date.strftime("%d%m%Y"),
+        target_date.strftime("%d%m%y"),
+    )
+    if any(token in normalized for token in date_tokens):
+        matches.append("date")
+        score += 30
+
+    return score, tuple(matches)
+
+
+def normalize_candidate_text_image(image: Image.Image) -> Image.Image:
+    if image.width >= 900:
+        return image
+    scale = max(2, round(900 / max(image.width, 1)))
+    return image.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
 
 
 def measure_kpta_color_ratios(image_path: Path) -> tuple[float, float]:

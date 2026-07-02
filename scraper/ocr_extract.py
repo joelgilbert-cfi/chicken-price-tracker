@@ -193,8 +193,8 @@ def _extract_numbers_from_long_run(run: str) -> list[int]:
     candidates: list[int] = []
 
     # Tesseract often reads Kannada "ರೂ." / punctuation before the price as
-    # leading digits, e.g. "100142" for the visible price "142".
-    if len(run) in (5, 6) and run.startswith(("10", "100", "00", "0")):
+    # leading digits, e.g. "100142" for "142" and "30158" for "158".
+    if len(run) in (5, 6) and run.startswith(("10", "100", "00", "0", "20", "30")):
         value = int(run[-3:])
         if MIN_PRICE <= value <= MAX_PRICE:
             return [value]
