@@ -44,28 +44,60 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
 
     image = normalize_ocr_image_size(Image.open(image_path).convert("RGB"))
     image.save(ocr_dir / "zoom.png")
+
+    top_crop, crop_left, crop_top = crop_top_price_region(image)
+    top_red_mask = build_red_mask(top_crop)
+    Image.fromarray(top_red_mask).save(ocr_dir / "top_price_red_mask.png")
+    top_raw_text, top_candidates = run_tesseract(
+        Image.fromarray(top_red_mask),
+        config="--psm 8 -c tessedit_char_whitelist=0123456789",
+        number_extractor=extract_top_price_numbers,
+        offset_left=crop_left,
+        offset_top=crop_top,
+    )
+
     red_mask = build_red_mask(image)
     Image.fromarray(red_mask).save(ocr_dir / "red_mask.png")
 
     ocr_image = Image.fromarray(red_mask)
     raw_text, candidates = run_tesseract(ocr_image)
+    LOGGER.info("Top price OCR output: %r", top_raw_text)
     LOGGER.info("Raw OCR output: %r", raw_text)
+    if top_candidates:
+        LOGGER.info("Top price OCR candidate numbers: %s", [candidate.value for candidate in top_candidates])
     LOGGER.info("OCR candidate numbers: %s", [candidate.value for candidate in candidates])
 
-    (ocr_dir / "raw_text.txt").write_text(raw_text, encoding="utf-8")
+    (ocr_dir / "raw_text.txt").write_text(
+        f"top_price={top_raw_text}\nfull={raw_text}\n",
+        encoding="utf-8",
+    )
     (ocr_dir / "candidates.json").write_text(
-        json.dumps([asdict(candidate) for candidate in candidates], indent=2),
+        json.dumps(
+            {
+                "top_price": [asdict(candidate) for candidate in top_candidates],
+                "full": [asdict(candidate) for candidate in candidates],
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
+    top_plausible = [
+        candidate for candidate in top_candidates if MIN_PRICE <= candidate.value <= MAX_PRICE
+    ]
+    selected = select_kpta_chicken_candidate(top_plausible)
+    plausible_source = top_plausible
+
     plausible = [candidate for candidate in candidates if MIN_PRICE <= candidate.value <= MAX_PRICE]
-    selected = select_kpta_chicken_candidate(plausible)
+    if selected is None:
+        selected = select_kpta_chicken_candidate(plausible)
+        plausible_source = plausible
     if selected is None:
         raise PriceNotFoundError("OCR did not return a plausible broiler wholesale price")
 
     selected_confidences = [
         candidate.confidence
-        for candidate in plausible
+        for candidate in plausible_source
         if candidate.value == selected.value and candidate.confidence is not None
     ]
     confidence = (
@@ -76,9 +108,9 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
     LOGGER.info("Accepted price: %s", selected.value)
     return OcrResult(
         price=selected.value,
-        raw_text=raw_text,
+        raw_text=raw_text if not top_raw_text else f"{top_raw_text} {raw_text}".strip(),
         confidence=confidence,
-        candidates=[candidate.value for candidate in plausible],
+        candidates=[candidate.value for candidate in plausible_source],
     )
 
 
@@ -124,6 +156,15 @@ def build_red_mask(image: Image.Image) -> np.ndarray:
     return mask
 
 
+def crop_top_price_region(image: Image.Image) -> tuple[Image.Image, int, int]:
+    width, height = image.size
+    left = int(width * 0.66)
+    top = int(height * 0.23)
+    right = width
+    bottom = int(height * 0.34)
+    return image.crop((left, top, right, bottom)), left, top
+
+
 def normalize_ocr_image_size(image: Image.Image) -> Image.Image:
     if image.width >= 600:
         return image
@@ -131,8 +172,17 @@ def normalize_ocr_image_size(image: Image.Image) -> Image.Image:
     return image.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
 
 
-def run_tesseract(image: Image.Image) -> tuple[str, list[OcrCandidate]]:
-    config = "--psm 6 -c tessedit_char_whitelist=0123456789"
+def run_tesseract(
+    image: Image.Image,
+    *,
+    config: str = "--psm 6 -c tessedit_char_whitelist=0123456789",
+    number_extractor=None,
+    offset_left: int = 0,
+    offset_top: int = 0,
+) -> tuple[str, list[OcrCandidate]]:
+    if number_extractor is None:
+        number_extractor = extract_numbers
+
     data = pytesseract.image_to_data(
         image,
         output_type=pytesseract.Output.DICT,
@@ -146,14 +196,14 @@ def run_tesseract(image: Image.Image) -> tuple[str, list[OcrCandidate]]:
         if not value_text:
             continue
         raw_parts.append(value_text)
-        for number in extract_numbers(value_text):
+        for number in number_extractor(value_text):
             candidates.append(
                 OcrCandidate(
                     value=number,
                     text=value_text,
                     confidence=_parse_confidence(_item_at(data.get("conf", []), index)),
-                    left=_safe_int(_item_at(data.get("left", []), index)),
-                    top=_safe_int(_item_at(data.get("top", []), index)),
+                    left=_offset_int(_safe_int(_item_at(data.get("left", []), index)), offset_left),
+                    top=_offset_int(_safe_int(_item_at(data.get("top", []), index)), offset_top),
                     width=_safe_int(_item_at(data.get("width", []), index)),
                     height=_safe_int(_item_at(data.get("height", []), index)),
                 )
@@ -161,9 +211,22 @@ def run_tesseract(image: Image.Image) -> tuple[str, list[OcrCandidate]]:
 
     raw_text = " ".join(raw_parts)
     if not candidates:
-        for number in extract_numbers(raw_text):
+        for number in number_extractor(raw_text):
             candidates.append(OcrCandidate(value=number, text=str(number), confidence=None))
     return raw_text, candidates
+
+
+def extract_top_price_numbers(text: str) -> list[int]:
+    numbers: list[int] = []
+    for match in re.finditer(r"\d+", text):
+        run = match.group(0)
+        if len(run) == 4 and run.startswith("0"):
+            value = int(run[-3:])
+            if MIN_PRICE <= value <= MAX_PRICE:
+                numbers.append(value)
+                continue
+        numbers.extend(extract_numbers(run))
+    return numbers
 
 
 def extract_numbers(text: str) -> list[int]:
@@ -238,3 +301,9 @@ def _safe_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _offset_int(value: int | None, offset: int) -> int | None:
+    if value is None:
+        return None
+    return value + offset

@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from scraper.exceptions import AmbiguousPriceError, PriceNotFoundError
-from scraper.ocr_extract import extract_numbers, extract_price, normalize_ocr_image_size
+from scraper.ocr_extract import extract_numbers, extract_price, extract_top_price_numbers, normalize_ocr_image_size
 
 
 def test_extract_numbers_filters_two_and_three_digit_values() -> None:
@@ -39,6 +39,10 @@ def test_extract_numbers_corrects_noisy_ocr_170_run() -> None:
         340,
         715,
     ]
+
+
+def test_extract_top_price_numbers_accepts_leading_zero_ocr() -> None:
+    assert extract_top_price_numbers("0170") == [170]
 
 
 def test_extract_numbers_prefers_trailing_price_from_noisy_rupee_prefix() -> None:
