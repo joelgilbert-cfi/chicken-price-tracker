@@ -199,11 +199,18 @@ def _extract_numbers_from_long_run(run: str) -> list[int]:
         if MIN_PRICE <= value <= MAX_PRICE:
             return [value]
 
+    # A red rupee marker can be read as leading junk, and a leading "1" in the
+    # price can be read as "4", e.g. "730470" for the visible price "170".
+    last_three = int(run[-3:])
+    if len(run) == 6 and run.startswith("730") and 400 <= last_three <= 499:
+        corrected = last_three - 300
+        if MIN_PRICE <= corrected <= MAX_PRICE:
+            candidates.append(corrected)
+
     first_three = int(run[:3])
     if MIN_PRICE <= first_three <= MAX_PRICE:
         candidates.append(first_three)
 
-    last_three = int(run[-3:])
     if MIN_PRICE <= last_three <= MAX_PRICE and last_three not in candidates:
         candidates.append(last_three)
 

@@ -30,6 +30,17 @@ def test_extract_numbers_corrects_missing_hundreds_digit() -> None:
     ]
 
 
+def test_extract_numbers_corrects_noisy_ocr_170_run() -> None:
+    assert extract_numbers("730470 700131 70165 4 20 340 1004 715") == [
+        170,
+        131,
+        165,
+        20,
+        340,
+        715,
+    ]
+
+
 def test_extract_numbers_prefers_trailing_price_from_noisy_rupee_prefix() -> None:
     assert extract_numbers("30158 00136 700145 00210 803050325715") == [158, 136, 145, 210]
 
@@ -125,6 +136,24 @@ def test_extract_price_selects_today_top_broiler_price(monkeypatch, tmp_path: Pa
     monkeypatch.setattr("pytesseract.image_to_data", fake_image_to_data)
     result = extract_price(image_path, tmp_path / "artifacts")
     assert result.price == 158
+
+
+def test_extract_price_selects_noisy_corrected_170_top_price(monkeypatch, tmp_path: Path) -> None:
+    image_path = _blank_png(tmp_path)
+
+    def fake_image_to_data(*_args, **_kwargs):
+        return {
+            "text": ["730470", "700131", "70165", "220", "340"],
+            "conf": ["61", "72", "69", "70", "65"],
+            "left": [200, 200, 200, 200, 80],
+            "top": [20, 80, 140, 200, 260],
+            "width": [90, 90, 90, 70, 60],
+            "height": [30, 30, 30, 30, 30],
+        }
+
+    monkeypatch.setattr("pytesseract.image_to_data", fake_image_to_data)
+    result = extract_price(image_path, tmp_path / "artifacts")
+    assert result.price == 170
 
 
 def test_normalize_ocr_image_size_upscales_small_images() -> None:
