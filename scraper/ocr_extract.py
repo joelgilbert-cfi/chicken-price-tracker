@@ -46,6 +46,7 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
     image.save(ocr_dir / "zoom.png")
 
     top_crop, crop_left, crop_top = crop_top_price_region(image)
+    top_crop.save(ocr_dir / "top_price_crop.png")
     top_red_mask = build_red_mask(top_crop)
     Image.fromarray(top_red_mask).save(ocr_dir / "top_price_red_mask.png")
     top_raw_text, top_candidates = run_tesseract(
@@ -157,12 +158,90 @@ def build_red_mask(image: Image.Image) -> np.ndarray:
 
 
 def crop_top_price_region(image: Image.Image) -> tuple[Image.Image, int, int]:
+    header_bounds = find_kpta_header_bounds(image)
+    if header_bounds is not None:
+        header_left, header_top, header_right, header_bottom = header_bounds
+        header_width = header_right - header_left
+        header_height = header_bottom - header_top
+
+        # The first KPTA price is just below the green header, on the right.
+        # This remains true when another price card shares the downloaded image.
+        left = int(header_left + header_width * 0.56)
+        top = int(header_bottom + header_height * 0.12)
+        right = header_right
+        bottom = int(header_bottom + header_height * 0.72)
+        LOGGER.info(
+            "Cropping first KPTA price relative to green header: "
+            "header=(%s,%s,%s,%s), crop=(%s,%s,%s,%s)",
+            header_left,
+            header_top,
+            header_right,
+            header_bottom,
+            left,
+            top,
+            right,
+            bottom,
+        )
+        return image.crop((left, top, right, bottom)), left, top
+
     width, height = image.size
     left = int(width * 0.66)
     top = int(height * 0.23)
     right = width
     bottom = int(height * 0.34)
+    LOGGER.warning("KPTA green header was not detected; using legacy fixed top-price crop")
     return image.crop((left, top, right, bottom)), left, top
+
+
+def find_kpta_header_bounds(image: Image.Image) -> tuple[int, int, int, int] | None:
+    """Find the bright green horizontal KPTA header in an article image."""
+    rgb = np.array(image.convert("RGB"))
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    green_mask = cv2.inRange(
+        hsv,
+        np.array([35, 80, 70]),
+        np.array([95, 255, 255]),
+    )
+
+    height, width = green_mask.shape
+    min_coverage = max(1, int(width * 0.35))
+    matching_rows = np.count_nonzero(green_mask, axis=1) >= min_coverage
+    runs = _contiguous_true_runs(matching_rows)
+    if not runs:
+        return None
+
+    # The header is a substantial horizontal green band. Select the strongest
+    # one so isolated green text or images cannot become the crop anchor.
+    candidates: list[tuple[int, int, int]] = []
+    for start, end in runs:
+        run_height = end - start
+        if run_height < max(5, int(height * 0.01)):
+            continue
+        coverage = int(np.count_nonzero(green_mask[start:end]))
+        candidates.append((coverage, start, end))
+    if not candidates:
+        return None
+
+    _, start, end = max(candidates)
+    header_pixels = green_mask[start:end] > 0
+    columns = np.where(np.any(header_pixels, axis=0))[0]
+    if len(columns) == 0:
+        return None
+    return int(columns[0]), start, int(columns[-1]) + 1, end
+
+
+def _contiguous_true_runs(values: np.ndarray) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, value in enumerate(values):
+        if value and start is None:
+            start = index
+        elif not value and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(values)))
+    return runs
 
 
 def normalize_ocr_image_size(image: Image.Image) -> Image.Image:

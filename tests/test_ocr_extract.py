@@ -6,7 +6,13 @@ import pytest
 from PIL import Image
 
 from scraper.exceptions import AmbiguousPriceError, PriceNotFoundError
-from scraper.ocr_extract import extract_numbers, extract_price, extract_top_price_numbers, normalize_ocr_image_size
+from scraper.ocr_extract import (
+    crop_top_price_region,
+    extract_numbers,
+    extract_price,
+    extract_top_price_numbers,
+    normalize_ocr_image_size,
+)
 
 
 def test_extract_numbers_filters_two_and_three_digit_values() -> None:
@@ -165,6 +171,28 @@ def test_normalize_ocr_image_size_upscales_small_images() -> None:
     normalized = normalize_ocr_image_size(image)
     assert normalized.width >= 600
     assert normalized.height > image.height
+
+
+def test_crop_top_price_region_uses_green_kpta_header_not_whole_image_position() -> None:
+    image = Image.new("RGB", (1_000, 1_000), "white")
+    pixels = image.load()
+    for y in range(420, 540):
+        for x in range(80, 920):
+            pixels[x, y] = (0, 220, 0)
+
+    crop, left, top = crop_top_price_region(image)
+
+    assert (left, top) == (550, 554)
+    assert crop.size == (370, 72)
+
+
+def test_crop_top_price_region_falls_back_when_green_header_is_absent() -> None:
+    image = Image.new("RGB", (1_000, 1_000), "white")
+
+    crop, left, top = crop_top_price_region(image)
+
+    assert (left, top) == (660, 230)
+    assert crop.size == (340, 110)
 
 
 def _blank_png(tmp_path: Path) -> Path:
