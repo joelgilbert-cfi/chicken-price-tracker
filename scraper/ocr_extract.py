@@ -83,16 +83,32 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
         encoding="utf-8",
     )
 
+    plausible = [candidate for candidate in candidates if MIN_PRICE <= candidate.value <= MAX_PRICE]
     top_plausible = [
         candidate for candidate in top_candidates if MIN_PRICE <= candidate.value <= MAX_PRICE
     ]
-    selected = select_kpta_chicken_candidate(top_plausible)
-    plausible_source = top_plausible
 
-    plausible = [candidate for candidate in candidates if MIN_PRICE <= candidate.value <= MAX_PRICE]
-    if selected is None:
-        selected = select_kpta_chicken_candidate(plausible)
+    try:
+        selected = select_kpta_chicken_candidate(top_plausible)
+    except AmbiguousPriceError as top_error:
+        # A tightly cropped row can still merge the Kannada rupee marker into
+        # its digits (for example, "180146" for a visible price of 146). Only
+        # resolve that ambiguity if the independent full-card OCR agrees.
+        full_selected = select_kpta_chicken_candidate(plausible)
+        top_values = {candidate.value for candidate in top_plausible}
+        if full_selected is None or full_selected.value not in top_values:
+            raise top_error
+        LOGGER.info(
+            "Resolved ambiguous top-price OCR using full-card corroboration: %s",
+            full_selected.value,
+        )
+        selected = full_selected
         plausible_source = plausible
+    else:
+        plausible_source = top_plausible
+        if selected is None:
+            selected = select_kpta_chicken_candidate(plausible)
+            plausible_source = plausible
     if selected is None:
         raise PriceNotFoundError("OCR did not return a plausible broiler wholesale price")
 

@@ -166,6 +166,36 @@ def test_extract_price_selects_noisy_corrected_170_top_price(monkeypatch, tmp_pa
     assert result.price == 170
 
 
+def test_extract_price_uses_full_card_to_resolve_merged_top_price_token(monkeypatch, tmp_path: Path) -> None:
+    image_path = _blank_png(tmp_path)
+
+    def fake_image_to_data(*_args, **kwargs):
+        if "--psm 8" in kwargs["config"]:
+            return {
+                "text": ["180146"],
+                "conf": ["70"],
+                "left": [10],
+                "top": [10],
+                "width": [100],
+                "height": [30],
+            }
+        return {
+            "text": ["7300146", "700136", "700185"],
+            "conf": ["75", "72", "71"],
+            "left": [200, 200, 200],
+            "top": [20, 80, 140],
+            "width": [90, 90, 90],
+            "height": [30, 30, 30],
+        }
+
+    monkeypatch.setattr("pytesseract.image_to_data", fake_image_to_data)
+
+    result = extract_price(image_path, tmp_path / "artifacts")
+
+    assert result.price == 146
+    assert result.candidates == [146, 136, 185]
+
+
 def test_normalize_ocr_image_size_upscales_small_images() -> None:
     image = Image.new("RGB", (300, 200), "white")
     normalized = normalize_ocr_image_size(image)

@@ -106,14 +106,10 @@ def build_sheet_row(
 
 
 def write_expected_failure(row: PriceRow, artifacts_dir: Path, status: str, notes: str) -> int:
-    try:
-        upsert_price(row)
-    except Exception:
-        LOGGER.exception("Failed writing expected failure row to Google Sheets")
-        write_final_status(artifacts_dir, "TECHNICAL_ERROR", 1, "Google Sheets write failed")
-        return 1
-    write_final_status(artifacts_dir, status, 0, notes)
-    return 0
+    del row
+    LOGGER.info("Skipping Google Sheet update because no KPTA price was confirmed")
+    write_final_status(artifacts_dir, status, 1, notes)
+    return 1
 
 
 def write_technical_failure(row: PriceRow, artifacts_dir: Path, notes: str) -> int:
