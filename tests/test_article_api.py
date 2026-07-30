@@ -100,6 +100,7 @@ def test_select_kpta_page_article_filters_before_ranking() -> None:
         article_id="VVAANINEW_BEN_20260627_5_6",
         green_ratio=0.1120,
         red_ratio=0.0727,
+        text_score=100,
     )
 
     assert select_kpta_page_article_candidate([false_positive, kpta]) == kpta
@@ -120,6 +121,28 @@ def test_select_kpta_page_article_prefers_kpta_text_signal() -> None:
     )
 
     assert select_kpta_page_article_candidate([green_red_ad, kpta]) == kpta
+
+
+def test_select_kpta_page_article_rejects_colour_only_candidate() -> None:
+    unrelated_article = _candidate(
+        article_id="VVAANINEW_BEN_20260728_12_10",
+        green_ratio=0.1158,
+        red_ratio=0.0739,
+    )
+
+    assert select_kpta_page_article_candidate([unrelated_article]) is None
+
+
+def test_select_kpta_page_article_accepts_phone_and_date_anchor() -> None:
+    candidate = _candidate(
+        article_id="VVAANINEW_BEN_20260728_12_3",
+        green_ratio=0.1158,
+        red_ratio=0.0739,
+        text_score=70,
+        text_matches=("7618763488", "date"),
+    )
+
+    assert select_kpta_page_article_candidate([candidate]) == candidate
 
 
 def test_score_kpta_text_signals_detects_unique_article_anchor(tmp_path, monkeypatch) -> None:
@@ -146,6 +169,7 @@ def _candidate(
     green_ratio: float,
     red_ratio: float,
     text_score: int = 0,
+    text_matches: tuple[str, ...] | None = None,
 ) -> PageArticleCandidate:
     return PageArticleCandidate(
         issue_id="VVAANINEW_BEN_20260627",
@@ -161,5 +185,5 @@ def _candidate(
         x2=0,
         y2=0,
         text_score=text_score,
-        text_matches=("kpta",) if text_score else (),
+        text_matches=text_matches if text_matches is not None else (("kpta",) if text_score else ()),
     )

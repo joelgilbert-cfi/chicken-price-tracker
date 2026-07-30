@@ -192,7 +192,12 @@ def capture_kpta_detail_view(
             LOGGER.info("Saved API KPTA page article image to %s", output_path)
             return
         except Exception as exc:
-            LOGGER.warning("KPTA page API image selection failed; trying click response: %s", exc)
+            LOGGER.warning(
+                "KPTA page API image was not positively verified; using detected page crop: %s",
+                exc,
+            )
+            crop_kpta_region_from_page(result, output_path)
+            return
 
     LOGGER.info("Clicking detected KPTA block to resolve exact API article image")
 

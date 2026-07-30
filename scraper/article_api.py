@@ -304,6 +304,7 @@ def select_kpta_page_article_candidate(
         for candidate in candidates
         if candidate.green_ratio >= KPTA_GREEN_RATIO_THRESHOLD
         and candidate.red_ratio >= KPTA_RED_RATIO_THRESHOLD
+        and has_kpta_identity_signal(candidate)
     ]
     if not valid_candidates:
         return None
@@ -316,6 +317,12 @@ def select_kpta_page_article_candidate(
             candidate.score,
         ),
     )
+
+
+def has_kpta_identity_signal(candidate: PageArticleCandidate) -> bool:
+    """Require an identity anchor, not merely KPTA-like colours."""
+    matches = set(candidate.text_matches)
+    return "kpta" in matches or {"7618763488", "date"}.issubset(matches)
 
 
 def score_kpta_text_signals(image_path: Path, target_date: date) -> tuple[int, tuple[str, ...]]:
