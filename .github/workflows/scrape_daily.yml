@@ -6,7 +6,7 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 50
     env:
       PYTHONPATH: ${{ github.workspace }}
 
@@ -33,11 +33,21 @@ jobs:
       - name: Run OCR tests
         run: python -m pytest
 
-      - name: Run scraper
+      - name: Run scraper with publication retries
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python -m scraper.main
+        run: |
+          for delay in 0 600 600 1200; do
+            if [ "$delay" -gt 0 ]; then
+              echo "No confirmed price yet; retrying in $delay seconds."
+              sleep "$delay"
+            fi
+            if python -m scraper.main; then
+              exit 0
+            fi
+          done
+          exit 1
 
       - name: Upload debug artifacts
         if: always()

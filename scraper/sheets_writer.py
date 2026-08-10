@@ -47,13 +47,7 @@ def validate_sheet_env() -> tuple[str, str]:
 
 
 def upsert_price(row: PriceRow) -> None:
-    credentials_json, sheet_id = validate_sheet_env()
-    credentials_info = json.loads(credentials_json)
-    credentials = Credentials.from_service_account_info(credentials_info, scopes=SCOPES)
-    client = gspread.authorize(credentials)
-    spreadsheet = client.open_by_key(sheet_id)
-    worksheet_name = os.environ.get("GOOGLE_WORKSHEET_NAME", DEFAULT_WORKSHEET_NAME)
-    worksheet = spreadsheet.worksheet(worksheet_name)
+    worksheet = open_manual_input_worksheet()
 
     date_values = worksheet.col_values(DATE_COLUMN)
     target_row_number = _find_date_row(date_values, row.date)
@@ -67,6 +61,24 @@ def upsert_price(row: PriceRow) -> None:
             value_input_option="USER_ENTERED",
         )
         LOGGER.info("Updated KPTA price in row %s for %s", target_row_number, row.date)
+
+
+def get_price_for_date(date_value: str) -> str | None:
+    worksheet = open_manual_input_worksheet()
+    target_row_number = _find_date_row(worksheet.col_values(DATE_COLUMN), date_value)
+    if target_row_number is None:
+        return None
+    return str(worksheet.cell(target_row_number, KPTA_PRICE_COLUMN).value).strip()
+
+
+def open_manual_input_worksheet():
+    credentials_json, sheet_id = validate_sheet_env()
+    credentials_info = json.loads(credentials_json)
+    credentials = Credentials.from_service_account_info(credentials_info, scopes=SCOPES)
+    client = gspread.authorize(credentials)
+    spreadsheet = client.open_by_key(sheet_id)
+    worksheet_name = os.environ.get("GOOGLE_WORKSHEET_NAME", DEFAULT_WORKSHEET_NAME)
+    return spreadsheet.worksheet(worksheet_name)
 
 
 def _find_date_row(date_values: list[str], date_value: str) -> int | None:

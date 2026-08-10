@@ -41,13 +41,14 @@ The scraper uses a hybrid flow:
 1. Opens today's Bengaluru edition with Playwright.
 2. Scans pages in the e-paper viewer using viewer controls.
 3. Screenshots each page and runs template matching against KPTA header crops in `scraper/templates/`.
-4. Once the KPTA block is found, uses the detected page number to query the e-paper article API for that specific page.
-5. Downloads only the likely KPTA article image from that page, selected by strong green KPTA-header and red-price color signals.
-6. Saves that clean article image to `artifacts/ocr/zoom.png`.
-7. Upscales small API article images before OCR.
-8. Extracts the KPTA chicken price and writes only the date and price to Google Sheets.
+4. Uses both template matching and KPTA-card structure detection: a vivid green header with a red price area beneath it.
+5. Uses the detected page number to query the e-paper article API. An image is accepted only when OCR confirms `KPTA`, or confirms both the KPTA phone number and target date.
+6. If the page API cannot verify an image, clicks the exact detected card and accepts the resulting detail image only after the same identity verification.
+7. Saves a page crop for review when no verified high-resolution image is available, then fails safely. Browser screenshot crops are never OCR input for an automatic sheet update.
+8. Runs compact and line OCR passes on the first red price row, then uses positional full-card OCR only when it can identify the top price row.
+9. Writes only the confirmed date and price to Google Sheets.
 
-If the page-specific API image selection fails, the scraper falls back to a cropped page screenshot of the detected KPTA region.
+If the page-specific API image selection fails, the scraper attempts the exact viewer-detail image. If that also cannot be verified as KPTA, it writes no sheet value and saves `artifacts/ocr/page_crop_review.png` for review.
 
 If Cloudflare or a "verify you are human" page appears, the scraper stops and records a technical failure.
 
@@ -69,3 +70,17 @@ The code path and workflow are in place, but production accuracy depends on user
 - A manual GitHub Actions run to confirm the live Vijaya Vani viewer selectors and page URL behavior.
 
 The scraper rejects missing or ambiguous OCR rather than guessing.
+
+## Reliability Operations
+
+The daily workflow retries at the requested run time, then after 10, 20, and 40 minutes. It only writes a price after a verified KPTA image and a confirmed top-price result. A failed run leaves `Manual Input` unchanged and uploads debug artifacts.
+
+To correct a confirmed historical value locally:
+
+```powershell
+python -m scraper.manual_override --date 05/08/2026 --price 138
+```
+
+The repository also includes a **KPTA Manual Price Override** GitHub workflow. Use it when the Google credentials exist only as GitHub secrets.
+
+The **KPTA Daily Reconciliation** workflow verifies that today's `Manual Input` row contains a numeric price. Configure a second cron-job.org request at 11:00 AM Asia/Kolkata to dispatch this workflow. It does not change the sheet; a failed reconciliation is the review alert.

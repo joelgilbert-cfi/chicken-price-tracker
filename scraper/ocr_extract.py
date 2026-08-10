@@ -56,6 +56,33 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
         offset_left=crop_left,
         offset_top=crop_top,
     )
+    top_plausible = [
+        candidate for candidate in top_candidates if MIN_PRICE <= candidate.value <= MAX_PRICE
+    ]
+    retry_top_raw_text = ""
+    retry_top_candidates: list[OcrCandidate] = []
+    if len({candidate.value for candidate in top_plausible}) != 1:
+        retry_top_raw_text, retry_top_candidates = run_tesseract(
+            Image.fromarray(top_red_mask),
+            config="--psm 7 -c tessedit_char_whitelist=0123456789",
+            number_extractor=extract_top_price_numbers,
+            offset_left=crop_left,
+            offset_top=crop_top,
+        )
+        retry_plausible = [
+            candidate for candidate in retry_top_candidates if MIN_PRICE <= candidate.value <= MAX_PRICE
+        ]
+        shared_values = {candidate.value for candidate in top_plausible} & {
+            candidate.value for candidate in retry_plausible
+        }
+        if len(shared_values) == 1:
+            top_plausible = [
+                candidate
+                for candidate in top_plausible + retry_plausible
+                if candidate.value in shared_values
+            ]
+        elif not top_plausible:
+            top_plausible = retry_plausible
 
     red_mask = build_red_mask(image)
     Image.fromarray(red_mask).save(ocr_dir / "red_mask.png")
@@ -63,19 +90,22 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
     ocr_image = Image.fromarray(red_mask)
     raw_text, candidates = run_tesseract(ocr_image)
     LOGGER.info("Top price OCR output: %r", top_raw_text)
+    if retry_top_raw_text:
+        LOGGER.info("Top price line OCR output: %r", retry_top_raw_text)
     LOGGER.info("Raw OCR output: %r", raw_text)
     if top_candidates:
         LOGGER.info("Top price OCR candidate numbers: %s", [candidate.value for candidate in top_candidates])
     LOGGER.info("OCR candidate numbers: %s", [candidate.value for candidate in candidates])
 
     (ocr_dir / "raw_text.txt").write_text(
-        f"top_price={top_raw_text}\nfull={raw_text}\n",
+        f"top_price={top_raw_text}\ntop_price_line={retry_top_raw_text}\nfull={raw_text}\n",
         encoding="utf-8",
     )
     (ocr_dir / "candidates.json").write_text(
         json.dumps(
             {
                 "top_price": [asdict(candidate) for candidate in top_candidates],
+                "top_price_line": [asdict(candidate) for candidate in retry_top_candidates],
                 "full": [asdict(candidate) for candidate in candidates],
             },
             indent=2,
@@ -84,10 +114,6 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
     )
 
     plausible = [candidate for candidate in candidates if MIN_PRICE <= candidate.value <= MAX_PRICE]
-    top_plausible = [
-        candidate for candidate in top_candidates if MIN_PRICE <= candidate.value <= MAX_PRICE
-    ]
-
     try:
         selected = select_kpta_chicken_candidate(top_plausible)
     except AmbiguousPriceError as top_error:
@@ -127,7 +153,7 @@ def extract_price(image_path: Path, artifacts_dir: Path) -> OcrResult:
         price=selected.value,
         raw_text=raw_text if not top_raw_text else f"{top_raw_text} {raw_text}".strip(),
         confidence=confidence,
-        candidates=[candidate.value for candidate in plausible_source],
+        candidates=list(dict.fromkeys(candidate.value for candidate in plausible_source)),
     )
 
 
@@ -346,6 +372,11 @@ def _extract_numbers_from_short_run(run: str) -> list[int]:
 
 def _extract_numbers_from_long_run(run: str) -> list[int]:
     if len(run) == 4:
+        # The red Kannada rupee marker is occasionally read as one leading
+        # digit, for example "3138" for the visible top price "138".
+        trailing_value = int(run[-3:])
+        if run.startswith(("0", "3")) and MIN_PRICE <= trailing_value <= 250:
+            return [trailing_value]
         return []
 
     candidates: list[int] = []

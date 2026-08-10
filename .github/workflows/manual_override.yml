@@ -1,0 +1,30 @@
+name: KPTA Manual Price Override
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: Date to correct (DD/MM/YYYY)
+        required: true
+        type: string
+      price:
+        description: Confirmed KPTA price
+        required: true
+        type: string
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Update confirmed price
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python -m scraper.manual_override --date "${{ inputs.date }}" --price "${{ inputs.price }}"

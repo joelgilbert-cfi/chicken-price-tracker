@@ -321,8 +321,18 @@ def select_kpta_page_article_candidate(
 
 def has_kpta_identity_signal(candidate: PageArticleCandidate) -> bool:
     """Require an identity anchor, not merely KPTA-like colours."""
-    matches = set(candidate.text_matches)
-    return "kpta" in matches or {"7618763488", "date"}.issubset(matches)
+    return has_kpta_text_identity(candidate.text_matches)
+
+
+def has_kpta_text_identity(matches: tuple[str, ...]) -> bool:
+    match_set = set(matches)
+    return "kpta" in match_set or {"7618763488", "date"}.issubset(match_set)
+
+
+def verify_kpta_image(image_path: Path, target_date: date) -> bool:
+    """Confirm that a downloaded high-resolution image is actually KPTA."""
+    _score, matches = score_kpta_text_signals(image_path, target_date)
+    return has_kpta_text_identity(matches)
 
 
 def score_kpta_text_signals(image_path: Path, target_date: date) -> tuple[int, tuple[str, ...]]:

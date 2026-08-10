@@ -27,6 +27,7 @@ class DetectionResult:
     height: int
     page_screenshot: str
     zoom_screenshot: str
+    method: str = "template"
 
 
 def scan_for_kpta(
@@ -59,7 +60,12 @@ def scan_for_kpta(
         screenshot_path = pages_dir / f"page_{page_number}.png"
         screenshot_page(page, screenshot_path)
 
-        match = best_template_match(screenshot_path, templates)
+        template_match = best_template_match(screenshot_path, templates)
+        structure_match = best_kpta_card_structure(screenshot_path)
+        match = max(
+            (template_match, structure_match),
+            key=lambda candidate: float(candidate["confidence"]),
+        )
         best_matches.append(
             {
                 "page": page_number,
@@ -69,6 +75,7 @@ def scan_for_kpta(
                 "width": match["width"],
                 "height": match["height"],
                 "template": match["template"],
+                "method": match["method"],
             }
         )
         _write_best_matches(best_matches, detection_dir)
@@ -86,6 +93,7 @@ def scan_for_kpta(
             height=int(match["height"]),
             page_screenshot=str(screenshot_path),
             zoom_screenshot=str(artifacts_dir / "ocr" / "zoom.png"),
+            method=str(match["method"]),
         )
         _write_detection_overlay(selected, artifacts_dir / "detection" / "selected_match.png")
         capture_kpta_detail_view(page, selected, artifacts_dir / "ocr" / "zoom.png", target_date=target_date)
@@ -193,13 +201,24 @@ def capture_kpta_detail_view(
             return
         except Exception as exc:
             LOGGER.warning(
-                "KPTA page API image was not positively verified; using detected page crop: %s",
+                "KPTA page API image was not positively verified; trying the exact detected block: %s",
                 exc,
             )
-            crop_kpta_region_from_page(result, output_path)
-            return
+            return _capture_verified_detail_or_fail(page, result, output_path, target_date)
 
+    return _capture_verified_detail_or_fail(page, result, output_path, target_date)
+
+
+def _capture_verified_detail_or_fail(
+    page: Page,
+    result: DetectionResult,
+    output_path: Path,
+    target_date: date | None,
+) -> None:
+    """Use the viewer click only when it produces a verified high-res KPTA image."""
     LOGGER.info("Clicking detected KPTA block to resolve exact API article image")
+    if page is None:
+        return _save_page_crop_for_review_and_fail(result, output_path, "Browser page was unavailable")
 
     center_x = result.x + result.width / 2
     center_y = result.y + result.height / 2
@@ -220,16 +239,26 @@ def capture_kpta_detail_view(
             page.mouse.click(center_x, click_y)
         response = response_info.value
         image_url = save_article_detail_image(response.json(), output_path)
+        if target_date is not None:
+            from scraper.article_api import verify_kpta_image
+
+            if not verify_kpta_image(output_path, target_date):
+                raise KPTANotFoundError("Clicked article image did not contain a KPTA identity signal")
         LOGGER.info("Saved API KPTA article image to %s from %s", output_path, image_url)
         return
     except Error as exc:
-        LOGGER.warning("KPTA API article response was not captured; falling back to page crop: %s", exc)
-        crop_kpta_region_from_page(result, output_path)
-        return
+        return _save_page_crop_for_review_and_fail(result, output_path, str(exc))
     except Exception as exc:
-        LOGGER.warning("KPTA API image download failed; falling back to page crop: %s", exc)
-        crop_kpta_region_from_page(result, output_path)
-        return
+        return _save_page_crop_for_review_and_fail(result, output_path, str(exc))
+
+
+def _save_page_crop_for_review_and_fail(result: DetectionResult, output_path: Path, reason: str) -> None:
+    review_path = output_path.with_name("page_crop_review.png")
+    crop_kpta_region_from_page(result, review_path)
+    raise KPTANotFoundError(
+        "No verified high-resolution KPTA image was available; "
+        f"saved detected page crop for review: {reason}"
+    )
 
 
 def crop_kpta_region_from_page(result: DetectionResult, output_path: Path) -> None:
@@ -277,6 +306,7 @@ def best_template_match(
         "width": 0,
         "height": 0,
         "template": None,
+        "method": "template",
     }
     for template_name, template in templates:
         if template.shape[0] > image.shape[0] or template.shape[1] > image.shape[1]:
@@ -291,8 +321,71 @@ def best_template_match(
                 "width": int(template.shape[1]),
                 "height": int(template.shape[0]),
                 "template": template_name,
+                "method": "template",
             }
     return best
+
+
+def best_kpta_card_structure(screenshot_path: Path) -> dict[str, object]:
+    """Locate a KPTA-like green header with a red price area underneath."""
+    image = cv2.imread(str(screenshot_path), cv2.IMREAD_COLOR)
+    if image is None:
+        return _empty_structure_match()
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    # KPTA is vivid green. The upper hue deliberately excludes blue-green
+    # newspaper section banners that previously became false positives.
+    green_mask = cv2.inRange(hsv, np.array([35, 100, 90]), np.array([80, 255, 255]))
+    red_mask = cv2.bitwise_or(
+        cv2.inRange(hsv, np.array([0, 55, 40]), np.array([12, 255, 255])),
+        cv2.inRange(hsv, np.array([168, 55, 40]), np.array([180, 255, 255])),
+    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+    connected_green = cv2.morphologyEx(green_mask, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(connected_green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    image_height, image_width = green_mask.shape
+    best = _empty_structure_match()
+    for contour in contours:
+        x, y, width, height = cv2.boundingRect(contour)
+        if width < image_width * 0.08 or height < max(8, image_height * 0.01):
+            continue
+        ratio = width / max(height, 1)
+        if not 2.0 <= ratio <= 20.0:
+            continue
+
+        header = green_mask[y : y + height, x : x + width]
+        green_coverage = float(np.count_nonzero(header) / max(1, header.size))
+        below_bottom = min(image_height, y + height * 7)
+        below = red_mask[y + height : below_bottom, x : x + width]
+        red_ratio = float(np.count_nonzero(below) / max(1, below.size))
+        if green_coverage < 0.35 or red_ratio < 0.015:
+            continue
+
+        confidence = min(0.95, 0.35 + green_coverage * 0.35 + min(red_ratio, 0.20) * 2.0)
+        if confidence > float(best["confidence"]):
+            best = {
+                "confidence": confidence,
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "template": None,
+                "method": "structure",
+            }
+    return best
+
+
+def _empty_structure_match() -> dict[str, object]:
+    return {
+        "confidence": -1.0,
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "template": None,
+        "method": "structure",
+    }
 
 
 def _write_best_matches(best_matches: list[dict[str, object]], detection_dir: Path) -> None:

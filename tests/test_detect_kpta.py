@@ -3,13 +3,18 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
-from scraper.detect_kpta import DetectionResult, capture_kpta_detail_view
+from scraper.detect_kpta import (
+    DetectionResult,
+    best_kpta_card_structure,
+    capture_kpta_detail_view,
+)
 from scraper.exceptions import KPTANotFoundError
 
 
-def test_capture_uses_detected_page_crop_when_api_image_is_not_verified(
+def test_capture_saves_detected_page_crop_for_review_when_api_image_is_not_verified(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -35,7 +40,32 @@ def test_capture_uses_detected_page_crop_when_api_image_is_not_verified(
         reject_api_image,
     )
 
-    capture_kpta_detail_view(None, result, output_path, target_date=date(2026, 7, 28))
+    with pytest.raises(KPTANotFoundError, match="No verified high-resolution KPTA image"):
+        capture_kpta_detail_view(None, result, output_path, target_date=date(2026, 7, 28))
 
-    cropped = Image.open(output_path)
+    cropped = Image.open(output_path.with_name("page_crop_review.png"))
     assert cropped.size == (750, 1_675)
+
+
+def test_structure_detector_prefers_kpta_green_header_over_teal_banner(tmp_path: Path) -> None:
+    page = Image.new("RGB", (1_000, 1_000), "white")
+    pixels = page.load()
+    for y in range(30, 75):
+        for x in range(10, 990):
+            pixels[x, y] = (0, 170, 170)  # Blue-green newspaper banner.
+    for y in range(700, 760):
+        for x in range(80, 480):
+            pixels[x, y] = (0, 220, 0)  # KPTA's vivid green header.
+    for y in range(780, 950):
+        for x in range(300, 450):
+            pixels[x, y] = (220, 0, 0)  # Red price-column signal.
+
+    path = tmp_path / "page.png"
+    page.save(path)
+
+    match = best_kpta_card_structure(path)
+
+    assert match["method"] == "structure"
+    assert match["confidence"] >= 0.70
+    assert match["x"] == 80
+    assert match["y"] == 700

@@ -55,6 +55,10 @@ def test_extract_numbers_prefers_trailing_price_from_noisy_rupee_prefix() -> Non
     assert extract_numbers("30158 00136 700145 00210 803050325715") == [158, 136, 145, 210]
 
 
+def test_extract_numbers_recovers_four_digit_top_price_with_rupee_noise() -> None:
+    assert extract_numbers("3138 00123 30485 0190") == [138, 123, 304, 190]
+
+
 def test_extract_price_accepts_single_plausible_candidate(monkeypatch, tmp_path: Path) -> None:
     image_path = _blank_png(tmp_path)
 
@@ -193,7 +197,39 @@ def test_extract_price_uses_full_card_to_resolve_merged_top_price_token(monkeypa
     result = extract_price(image_path, tmp_path / "artifacts")
 
     assert result.price == 146
-    assert result.candidates == [146, 136, 185]
+    assert result.candidates == [146]
+
+
+def test_extract_price_uses_line_ocr_when_compact_top_ocr_is_empty(monkeypatch, tmp_path: Path) -> None:
+    image_path = _blank_png(tmp_path)
+
+    def fake_image_to_data(*_args, **kwargs):
+        config = kwargs["config"]
+        if "--psm 8" in config:
+            return {"text": [], "conf": [], "left": [], "top": [], "width": [], "height": []}
+        if "--psm 7" in config:
+            return {
+                "text": ["3138"],
+                "conf": ["89"],
+                "left": [10],
+                "top": [10],
+                "width": [70],
+                "height": [30],
+            }
+        return {
+            "text": ["00123", "30485"],
+            "conf": ["70", "65"],
+            "left": [200, 200],
+            "top": [20, 80],
+            "width": [90, 90],
+            "height": [30, 30],
+        }
+
+    monkeypatch.setattr("pytesseract.image_to_data", fake_image_to_data)
+
+    result = extract_price(image_path, tmp_path / "artifacts")
+
+    assert result.price == 138
 
 
 def test_normalize_ocr_image_size_upscales_small_images() -> None:
